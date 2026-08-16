@@ -180,7 +180,7 @@
         setAnalysisError(null);
         setAnalysisResult(null);
 
-        const promptText = `Analyze this coffee bag and output the baseline ESPRESSO parameters. NEVER output filter or pour over brew specs. Return ONLY raw JSON with:
+        const promptText = `Analyze this coffee bag image and output baseline ESPRESSO parameters. NEVER output filter or drip brewing specs. Return ONLY raw JSON without backticks matching:
 {
   "roaster": "Company Name",
   "beanName": "Name of coffee / single origin",
@@ -209,31 +209,40 @@
           contents: [{ parts: contentsParts }]
         };
 
-        // Comprehensive endpoint list covering v1beta and v1 with both URL key & header auth
-        const modelNames = [
-          'gemini-2.0-flash',
-          'gemini-2.5-flash',
-          'gemini-1.5-flash',
-          'gemini-1.5-pro'
-        ];
+        // Determine if using Google AQ Bearer Token or legacy AIza key
+        const isBearerAuth = key.startsWith('AQ.');
 
+        const modelList = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
         let success = false;
         let lastErr = null;
 
-        for (const model of modelNames) {
-          const endpoints = [
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-            `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${key}`
+        for (const model of modelList) {
+          const authVariations = isBearerAuth ? [
+            {
+              url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${key}`
+              }
+            },
+            {
+              url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            }
+          ] : [
+            {
+              url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+              headers: { 'Content-Type': 'application/json' }
+            }
           ];
 
-          for (const url of endpoints) {
+          for (const attempt of authVariations) {
             try {
-              const res = await fetch(url, {
+              const res = await fetch(attempt.url, {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-goog-api-key': key
-                },
+                headers: attempt.headers,
                 body: JSON.stringify(payload)
               });
 
@@ -260,7 +269,7 @@
         }
 
         if (!success) {
-          setAnalysisError(lastErr?.message || 'Failed to analyze coffee bag.');
+          setAnalysisError(lastErr?.message || 'Failed to analyze coffee bag with provided key.');
         }
         setIsAnalyzing(false);
       };
@@ -556,7 +565,7 @@
                   type="password"
                   value={keyInput}
                   onChange={(e) => setKeyInput(e.target.value)}
-                  placeholder="AIzaSy... or AQ..."
+                  placeholder="AQ.Ab8RN..."
                   className="w-full px-3 py-2 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-white"
                 />
                 <div className="flex justify-end gap-2">
