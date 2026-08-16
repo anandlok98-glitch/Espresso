@@ -130,9 +130,10 @@
       };
 
       const saveCustomKey = (key) => {
-        setCustomApiKey(key);
+        const cleaned = key.trim();
+        setCustomApiKey(cleaned);
         try {
-          localStorage.setItem('espresso_gemini_key', key);
+          localStorage.setItem('espresso_gemini_key', cleaned);
         } catch (e) {}
         setShowKeyModal(false);
         showToast('API Key saved to browser!');
@@ -164,7 +165,8 @@
       };
 
       const analyzeCoffeeBag = async () => {
-        if (!customApiKey) {
+        const key = (customApiKey || '').trim();
+        if (!key) {
           setShowKeyModal(true);
           showToast('Please enter your Gemini API Key first');
           return;
@@ -178,7 +180,7 @@
         setAnalysisError(null);
         setAnalysisResult(null);
 
-        const promptText = `Extract details from this coffee bag and output the baseline ESPRESSO brewing parameters. Output ONLY a valid JSON object without markdown formatting with this schema:
+        const promptText = `Extract details from this coffee bag and output the baseline ESPRESSO parameters. NEVER output filter or pour over brew specs. Return ONLY raw JSON in this exact structure:
 {
   "roaster": "Company Name",
   "beanName": "Name of coffee / single origin",
@@ -203,48 +205,78 @@
           });
         });
 
-        // Try standard production endpoints
-        const endpoints = [
-          `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${customApiKey}`,
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${customApiKey}`
-        ];
+        const payload = {
+          contents: [{ parts: contentsParts }]
+        };
 
-        let success = false;
-        let lastError = null;
+        try {
+          // Dynamically detect available models for this specific API key
+          let candidateModels = [
+            'models/gemini-2.0-flash',
+            'models/gemini-2.0-flash-exp',
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-pro'
+          ];
 
-        for (const url of endpoints) {
           try {
-            const res = await fetch(url, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: contentsParts }]
-              })
-            });
-
-            if (!res.ok) {
-              const errBody = await res.json().catch(() => ({}));
-              throw new Error(errBody.error?.message || `HTTP ${res.status}`);
+            const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+            if (listRes.ok) {
+              const listData = await listRes.json();
+              if (listData.models && Array.isArray(listData.models)) {
+                const supported = listData.models
+                  .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+                  .map(m => m.name);
+                if (supported.length > 0) {
+                  candidateModels = supported;
+                }
+              }
             }
-
-            const data = await res.json();
-            let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (!rawText) throw new Error("Empty response received from Gemini.");
-            
-            rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
-            const parsed = JSON.parse(rawText);
-            setAnalysisResult(parsed);
-            success = true;
-            break;
-          } catch (err) {
-            lastError = err;
+          } catch (e) {
+            console.warn("Could not list models, proceeding with fallback candidates.", e);
           }
-        }
 
-        if (!success) {
-          setAnalysisError(lastError?.message || 'Failed to analyze coffee bag.');
+          let lastErr = null;
+          let parsedData = null;
+
+          for (const modelName of candidateModels) {
+            const cleanModel = modelName.replace('models/', '');
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${key}`;
+
+            try {
+              const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+
+              if (!res.ok) {
+                const errJson = await res.json().catch(() => ({}));
+                lastErr = new Error(errJson.error?.message || `HTTP ${res.status}`);
+                continue;
+              }
+
+              const data = await res.json();
+              let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (!rawText) continue;
+
+              rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+              parsedData = JSON.parse(rawText);
+              break;
+            } catch (err) {
+              lastErr = err;
+            }
+          }
+
+          if (!parsedData) {
+            throw lastErr || new Error("Unable to analyze with available Gemini models.");
+          }
+
+          setAnalysisResult(parsedData);
+        } catch (err) {
+          setAnalysisError(err.message || 'Failed to analyze coffee bag.');
+        } finally {
+          setIsAnalyzing(false);
         }
-        setIsAnalyzing(false);
       };
 
       const handleSaveLog = (item) => {
