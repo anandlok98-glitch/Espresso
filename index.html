@@ -178,7 +178,7 @@
         setAnalysisError(null);
         setAnalysisResult(null);
 
-        const promptText = `Analyze this coffee bag. Determine BASELINE ESPRESSO parameters. NEVER output filter or pour over brew specs. Respond with ONLY raw JSON matching:
+        const promptText = `Extract details from this coffee bag and output the baseline ESPRESSO brewing parameters. Output ONLY a valid JSON object without markdown formatting with this schema:
 {
   "roaster": "Company Name",
   "beanName": "Name of coffee / single origin",
@@ -192,7 +192,7 @@
   "suggestedTargetTimeSec": 28,
   "preInfusionPumpOnSec": 4,
   "preInfusionPumpOffSec": 4,
-  "grindSettingAdvice": "Advice on grind size relative to baseline",
+  "grindSettingAdvice": "Advice on grind size relative to standard baseline",
   "dialInRationale": "Why these parameters suit this specific roast and origin"
 }`;
 
@@ -203,36 +203,48 @@
           });
         });
 
-        try {
-          const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${customApiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{ parts: contentsParts }],
-              generationConfig: {
-                responseMimeType: "application/json"
-              }
-            })
-          });
+        // Try standard production endpoints
+        const endpoints = [
+          `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${customApiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${customApiKey}`
+        ];
 
-          if (!res.ok) {
-            const errBody = await res.json().catch(() => ({}));
-            throw new Error(errBody.error?.message || `HTTP ${res.status}`);
+        let success = false;
+        let lastError = null;
+
+        for (const url of endpoints) {
+          try {
+            const res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: contentsParts }]
+              })
+            });
+
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => ({}));
+              throw new Error(errBody.error?.message || `HTTP ${res.status}`);
+            }
+
+            const data = await res.json();
+            let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!rawText) throw new Error("Empty response received from Gemini.");
+            
+            rawText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+            const parsed = JSON.parse(rawText);
+            setAnalysisResult(parsed);
+            success = true;
+            break;
+          } catch (err) {
+            lastError = err;
           }
-
-          const data = await res.json();
-          let rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!rawText) throw new Error("Empty response received from Gemini.");
-          
-          // Sanitize if markdown wrapped
-          rawText = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
-          const parsed = JSON.parse(rawText);
-          setAnalysisResult(parsed);
-        } catch (err) {
-          setAnalysisError(err.message || 'Failed to analyze coffee bag.');
-        } finally {
-          setIsAnalyzing(false);
         }
+
+        if (!success) {
+          setAnalysisError(lastError?.message || 'Failed to analyze coffee bag.');
+        }
+        setIsAnalyzing(false);
       };
 
       const handleSaveLog = (item) => {
